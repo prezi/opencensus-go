@@ -70,6 +70,10 @@ type Handler struct {
 	// from the information found in the incoming HTTP Request. By default the
 	// name equals the URL Path.
 	FormatSpanName func(*http.Request) string
+
+	// UseSecondsAsUnit should be set to true if you want to collect time related
+	// metrics in seconds instead of milliseconds
+	UseSecondsAsUnit bool
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -146,9 +150,10 @@ func (h *Handler) startStats(w http.ResponseWriter, r *http.Request) (http.Respo
 		tag.Upsert(Path, r.URL.Path),
 		tag.Upsert(Method, r.Method))
 	track := &trackingResponseWriter{
-		start:  time.Now(),
-		ctx:    ctx,
-		writer: w,
+		start:      time.Now(),
+		ctx:        ctx,
+		writer:     w,
+		useSeconds: h.UseSecondsAsUnit,
 	}
 	if r.Body == nil {
 		// TODO: Handle cases where ContentLength is not set.
@@ -169,6 +174,7 @@ type trackingResponseWriter struct {
 	statusLine string
 	endOnce    sync.Once
 	writer     http.ResponseWriter
+	useSeconds bool
 }
 
 // Compile time assertion for ResponseWriter interface
@@ -186,10 +192,18 @@ func (t *trackingResponseWriter) end(tags *addedTags) {
 		span.SetStatus(TraceStatus(t.statusCode, t.statusLine))
 		span.AddAttributes(trace.Int64Attribute(StatusCodeAttribute, int64(t.statusCode)))
 
+		var latencyM stats.Measurement
+		if t.useSeconds == true {
+			latencyM = ServerLatency.M(float64(time.Since(t.start)) / float64(time.Second))
+		} else {
+			latencyM = ServerLatency.M(float64(time.Since(t.start)) / float64(time.Millisecond))
+		}
+
 		m := []stats.Measurement{
-			ServerLatency.M(float64(time.Since(t.start)) / float64(time.Millisecond)),
+			latencyM,
 			ServerResponseBytes.M(t.respSize),
 		}
+
 		if t.reqSize >= 0 {
 			m = append(m, ServerRequestBytes.M(t.reqSize))
 		}
